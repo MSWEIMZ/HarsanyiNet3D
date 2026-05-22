@@ -375,8 +375,7 @@ def train_epoch(model, loader, optimizer, criterion, device, scaler, scheduler):
         torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         scaler.step(optimizer)
         scaler.update()
-        if scaler.get_scale() >= scaler.get_scale():
-            scheduler.step()
+        scheduler.step()
         total_loss += loss.item() * batch_y.size(0)
         correct += (outputs.argmax(1) == batch_y).sum().item()
         total += batch_y.size(0)
