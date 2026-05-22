@@ -411,6 +411,26 @@ class HarsanyiNet3D(nn.Module):
         output = self.fc_final(hidden_y)
         return output
 
+    def load_pretrained_stem(self, stem_path: str) -> None:
+        """
+        加载预训练 stem 权重。
+
+        Args:
+            stem_path: .pth 文件路径 (由 pretrain_stem.py 生成)
+        """
+        state_dict = torch.load(stem_path, map_location=self.device)
+        missing, unexpected = self.stem.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"[Stem loading] Missing keys: {len(missing)}")
+            for k in missing:
+                print(f"  - {k}")
+        if unexpected:
+            print(f"[Stem loading] Unexpected keys: {len(unexpected)}")
+            for k in unexpected:
+                print(f"  - {k}")
+        if not missing and not unexpected:
+            print(f"[Stem loading] Loaded {len(state_dict)} keys successfully ✓")
+
     def _get_z0(self, x: Tensor) -> Tensor:
         """
         Input:  raw 3D volume (B, in_channels, D, H, W)

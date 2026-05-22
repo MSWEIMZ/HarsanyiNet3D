@@ -79,6 +79,8 @@ parser.add_argument('--dry_run', action='store_true',
 # 输出
 parser.add_argument('--save_dir', type=str, default=None,
                     help="自动生成 result_harsanyi3d_时间戳")
+parser.add_argument('--stem_pretrained', type=str, default=None,
+                    help="预训练 stem 权重路径 (由 pretrain_stem.py 生成)")
 
 args = parser.parse_args()
 
@@ -526,6 +528,11 @@ def main():
             device=DEVICE,
             in_channels=1,
         ).to(DEVICE)
+
+        # 加载预训练 stem 权重
+        if args.stem_pretrained:
+            log(f"Loading pretrained stem from {args.stem_pretrained}")
+            model.load_pretrained_stem(args.stem_pretrained)
 
         # Dry run: just one batch then exit
         if args.dry_run:
