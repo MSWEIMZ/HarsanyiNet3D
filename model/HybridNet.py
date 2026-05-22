@@ -98,6 +98,37 @@ class HybridR2Plus1D(nn.Module):
 
         self.fc_final = nn.Linear(fc_size, num_classes, bias=False)
 
+    def load_finetuned_backbone(self, checkpoint_path: str) -> None:
+        """
+        加载在相同数据上微调过的 R(2+1)D backbone 权重。
+
+        Args:
+            checkpoint_path: result_v58_fixed_xxx/best_fold*.pth 路径
+        """
+        ckpt = torch.load(checkpoint_path, map_location=self.device)
+        sd = ckpt.get('model_state_dict', ckpt.get('state_dict', ckpt))
+
+        # 提取 backbone 相关键 (过滤掉 stem[0] 部分以兼容单通道适配)
+        backbone_sd = {}
+        for k, v in sd.items():
+            if k.startswith('backbone.'):
+                # 去掉 'backbone.' 前缀
+                new_k = k[len('backbone.'):]
+                # stem[0] 权重跳过 (用我们自己的单通道适配)
+                if new_k.startswith('stem.0.'):
+                    continue
+                backbone_sd[new_k] = v
+
+        missing, unexpected = self.backbone.load_state_dict(backbone_sd, strict=False)
+        loaded = len(backbone_sd)
+        if missing:
+            print(f"[Backbone] Missing: {len(missing)} keys (expected: stem[0] + head)")
+            for k in missing[:5]:
+                print(f"  - {k}")
+        if unexpected:
+            print(f"[Backbone] Unexpected: {len(unexpected)} keys")
+        print(f"[Backbone] Loaded {loaded} keys from {checkpoint_path} ✓")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 1. R(2+1)D backbone → intermediate features
         x = self.backbone.stem(x)

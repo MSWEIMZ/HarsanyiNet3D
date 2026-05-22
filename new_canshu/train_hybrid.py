@@ -66,6 +66,8 @@ parser.add_argument('--num_workers', type=int, default=8)
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--n_splits', type=int, default=5)
 parser.add_argument('--save_dir', type=str, default=None)
+parser.add_argument('--backbone_checkpoint', type=str, default=None,
+                    help='微调过的 R2+1D checkpoint (result_v58_fixed_xxx/best_fold*.pth)')
 
 args = parser.parse_args()
 DEVICE = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -290,7 +292,7 @@ def main():
 
     print(f"Training hybrid model: frozen R(2+1)D + HarsanyiBlock×{args.num_layers}")
     print(f"Samples: {len(tmp_ds)} train ({tmp_ds.views} view), {len(full_val_ds)} val (3 views)")
-    print(f="\n{'='*80}")
+    print("\n" + "="*80)
 
     final_file_probs = np.zeros((len(y_global), NUM_CLASSES))
 
@@ -313,6 +315,13 @@ def main():
         model = HybridR2Plus1D(num_classes=NUM_CLASSES, num_layers=args.num_layers, channels=args.channels,
                                 beta=args.beta, gamma=args.gamma, conv_size=args.conv_size,
                                 fc_size=args.fc_size, device=DEVICE, freeze_backbone=True).to(DEVICE)
+
+        # 加载微调过的 backbone 权重
+        if args.backbone_checkpoint:
+            model.load_finetuned_backbone(args.backbone_checkpoint)
+            # 冻结 backbone
+            for p in model.backbone.parameters():
+                p.requires_grad = False
 
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         print(f"Trainable: {sum(p.numel() for p in trainable_params):,} / {sum(p.numel() for p in model.parameters()):,} total")
