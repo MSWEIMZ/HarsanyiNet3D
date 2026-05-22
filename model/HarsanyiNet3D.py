@@ -69,6 +69,45 @@ def conv3x3x3(in_channels: int, out_channels: int,
 
 
 # =============================================================================
+# 3D Residual Block — for the improved stem
+# =============================================================================
+class ResBlock3D(nn.Module):
+    """
+    3D residual block with two Conv3d + BN + ReLU layers.
+    Downsampling via stride in the second conv.
+    """
+    def __init__(self, in_channels: int, out_channels: int,
+                 stride=1, temporal_stride=None):
+        super().__init__()
+        ts = temporal_stride if temporal_stride is not None else stride
+
+        self.conv1 = nn.Conv3d(in_channels, out_channels,
+                               kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm3d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv3d(out_channels, out_channels,
+                               kernel_size=3, stride=(ts, stride, stride),
+                               padding=1, bias=False)
+        self.bn2 = nn.BatchNorm3d(out_channels)
+
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_channels, out_channels,
+                          kernel_size=1, stride=(ts, stride, stride), bias=False),
+                nn.BatchNorm3d(out_channels),
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = self.relu(out + self.shortcut(x))
+        return out
+
+
+# =============================================================================
 # HarsanyiBlock3D
 # =============================================================================
 class HarsanyiBlock3D(nn.Module):
@@ -300,6 +339,7 @@ class HarsanyiNet3D(nn.Module):
         device: str = 'cuda:1',
         in_channels: int = 1,
         comparable_DNN: bool = False,
+        stem_type: str = 'simple',
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -309,7 +349,11 @@ class HarsanyiNet3D(nn.Module):
         self.conv_size = conv_size
 
         # Stem: (B, 1, D_in, H_in, W_in) → (B, channels, K, K, K)
-        self.stem = self._build_stem(in_channels, channels, conv_size)
+        self.stem_type = stem_type
+        if stem_type == 'res':
+            self.stem = self._build_res_stem(in_channels, channels, conv_size)
+        else:
+            self.stem = self._build_stem(in_channels, channels, conv_size)
 
         # HarsanyiBlocks
         self.HarsanyiBlocks = nn.ModuleList()
@@ -385,6 +429,45 @@ class HarsanyiNet3D(nn.Module):
         layers.append(nn.AdaptiveAvgPool3d((K, K, K)))
 
         return nn.Sequential(*layers)
+
+    def _build_res_stem(self, in_channels: int, channels: int, K: int) -> nn.Sequential:
+        """
+        Residual stem with better gradient flow.
+
+        Input:  (B, 1, 32, 224, 224)
+        Output: (B, channels, K, K, K)
+
+        Uses ResBlock3D with skip connections to avoid gradient vanishing.
+        Spatial: 224 → 112 → 56 → 28 → 14 → 7 → K
+        Temporal: 32 → 32 → 16 → 8 → 8 → 8 → K
+        """
+        return nn.Sequential(
+            # Initial spatial down: 224→56, temporal keep: 32→32
+            nn.Conv3d(in_channels, 32,
+                      kernel_size=(1, 7, 7), stride=(1, 4, 4),
+                      padding=(0, 3, 3), bias=False),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+            # (32, 32, 56, 56)
+
+            # ResBlock: spatiotemporal down 32→16 temporal, 56→28 spatial
+            ResBlock3D(32, 64, stride=2),
+            # (64, 16, 28, 28)
+
+            # ResBlock: spatiotemporal down 16→8 temporal, 28→14 spatial
+            ResBlock3D(64, 128, stride=2),
+            # (128, 8, 14, 14)
+
+            # ResBlock: spatial-only down 14→7, temporal keep 8
+            ResBlock3D(128, channels, stride=2, temporal_stride=1),
+            # (channels, 8, 7, 7)
+
+            # ResBlock: refine features, no downsampling
+            ResBlock3D(channels, channels, stride=1),
+            # (channels, 8, 7, 7)
+
+            nn.AdaptiveAvgPool3d((K, K, K)),
+        )
 
     def _init_weights(self) -> None:
         for m in self.modules():

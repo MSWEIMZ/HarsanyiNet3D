@@ -45,6 +45,8 @@ parser.add_argument('--temporal_stride', type=int, default=2)
 parser.add_argument('--channels', type=int, default=256)
 parser.add_argument('--conv_size', type=int, default=8)
 parser.add_argument('--in_channels', type=int, default=1)
+parser.add_argument('--stem_type', type=str, default='res', choices=['simple', 'res'],
+                    help="'simple'=原4层Conv, 'res'=带残差的深层stem")
 
 # 训练
 parser.add_argument('--epochs', type=int, default=150)
@@ -107,31 +109,53 @@ class StemClassifier(nn.Module):
     HarsanyiNet3D 的 Stem + Global Average Pooling + FC 分类头
     没有 HarsanyiBlock，纯卷积特征提取 + 分类
     """
-    def __init__(self, in_channels, channels, K, num_classes):
+    def __init__(self, in_channels, channels, K, num_classes, stem_type='res'):
         super().__init__()
-        # 复用 HarsanyiNet3D._build_stem 的逻辑
-        self.stem = nn.Sequential(
-            # Block 1: heavy spatial down
-            nn.Conv3d(in_channels, 48, kernel_size=(1,7,7), stride=(1,4,4),
-                      padding=(0,3,3), bias=False),
-            nn.BatchNorm3d(48), nn.ReLU(inplace=True),
-            # (48, D, 56, 56)
+        if stem_type == 'res':
+            from model.HarsanyiNet3D import ResBlock3D
+            self.stem = nn.Sequential(
+                nn.Conv3d(in_channels, 32, kernel_size=(1, 7, 7), stride=(1, 4, 4),
+                          padding=(0, 3, 3), bias=False),
+                nn.BatchNorm3d(32), nn.ReLU(inplace=True),
+                # (32, 32, 56, 56)
 
-            nn.Conv3d(48, 96, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm3d(96), nn.ReLU(inplace=True),
-            # (96, D//2, 28, 28)
+                ResBlock3D(32, 64, stride=2),
+                # (64, 16, 28, 28)
 
-            nn.Conv3d(96, channels, kernel_size=3, stride=(2,2,2), padding=1, bias=False),
-            nn.BatchNorm3d(channels), nn.ReLU(inplace=True),
-            # (C, D//4, 14, 14)
+                ResBlock3D(64, 128, stride=2),
+                # (128, 8, 14, 14)
 
-            nn.Conv3d(channels, channels, kernel_size=(1,3,3), stride=(1,2,2),
-                      padding=(0,1,1), bias=False),
-            nn.BatchNorm3d(channels), nn.ReLU(inplace=True),
-            # (C, D//4, 7, 7)
+                ResBlock3D(128, channels, stride=2, temporal_stride=1),
+                # (channels, 8, 7, 7)
 
-            nn.AdaptiveAvgPool3d((K, K, K)),
-        )
+                ResBlock3D(channels, channels, stride=1),
+                # (channels, 8, 7, 7)
+
+                nn.AdaptiveAvgPool3d((K, K, K)),
+            )
+        else:
+            self.stem = nn.Sequential(
+                # Block 1: heavy spatial down
+                nn.Conv3d(in_channels, 48, kernel_size=(1,7,7), stride=(1,4,4),
+                          padding=(0,3,3), bias=False),
+                nn.BatchNorm3d(48), nn.ReLU(inplace=True),
+                # (48, D, 56, 56)
+
+                nn.Conv3d(48, 96, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.BatchNorm3d(96), nn.ReLU(inplace=True),
+                # (96, D//2, 28, 28)
+
+                nn.Conv3d(96, channels, kernel_size=3, stride=(2,2,2), padding=1, bias=False),
+                nn.BatchNorm3d(channels), nn.ReLU(inplace=True),
+                # (C, D//4, 14, 14)
+
+                nn.Conv3d(channels, channels, kernel_size=(1,3,3), stride=(1,2,2),
+                          padding=(0,1,1), bias=False),
+                nn.BatchNorm3d(channels), nn.ReLU(inplace=True),
+                # (C, D//4, 7, 7)
+
+                nn.AdaptiveAvgPool3d((K, K, K)),
+            )
 
         # 分类头
         self.classifier = nn.Sequential(
@@ -405,7 +429,8 @@ def main():
                                 num_workers=args.num_workers, pin_memory=True)
 
         model = StemClassifier(in_channels=args.in_channels, channels=args.channels,
-                               K=args.conv_size, num_classes=NUM_CLASSES).to(DEVICE)
+                               K=args.conv_size, num_classes=NUM_CLASSES,
+                               stem_type=args.stem_type).to(DEVICE)
         scaler = GradScaler()
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(

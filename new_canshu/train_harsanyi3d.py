@@ -81,6 +81,8 @@ parser.add_argument('--save_dir', type=str, default=None,
                     help="自动生成 result_harsanyi3d_时间戳")
 parser.add_argument('--stem_pretrained', type=str, default=None,
                     help="预训练 stem 权重路径 (由 pretrain_stem.py 生成)")
+parser.add_argument('--stem_type', type=str, default='simple', choices=['simple', 'res'],
+                    help="'simple'=原4层Conv, 'res'=带残差的深层stem")
 
 args = parser.parse_args()
 
@@ -527,6 +529,7 @@ def main():
             fc_size=args.fc_size,
             device=DEVICE,
             in_channels=1,
+            stem_type=args.stem_type,
         ).to(DEVICE)
 
         # 加载预训练 stem 权重
