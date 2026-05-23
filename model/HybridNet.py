@@ -100,34 +100,33 @@ class HybridR2Plus1D(nn.Module):
 
     def load_finetuned_backbone(self, checkpoint_path: str) -> None:
         """
-        加载在相同数据上微调过的 R(2+1)D backbone 权重。
-
-        Args:
-            checkpoint_path: result_v58_fixed_xxx/best_fold*.pth 路径
+        加载完整微调模型并提取 backbone。
+        直接用训好的 MitoModel3D 权重，避免 stem 结构不匹配。
         """
+        # 使用用户原始模型定义加载完整 checkpoint
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'new_canshu'))
+        from train import MitoModel3D
+
         ckpt = torch.load(checkpoint_path, map_location=self.device)
         sd = ckpt.get('model_state_dict', ckpt.get('state_dict', ckpt))
 
-        # 提取 backbone 相关键 (过滤掉 stem[0] 部分以兼容单通道适配)
+        full_model = MitoModel3D().to(self.device)
+        full_model.load_state_dict(sd)
+
+        # 提取 backbone 权重 (直接复制，结构完全一致)
         backbone_sd = {}
-        for k, v in sd.items():
-            if k.startswith('backbone.'):
-                # 去掉 'backbone.' 前缀
-                new_k = k[len('backbone.'):]
-                # stem[0] 权重跳过 (用我们自己的单通道适配)
-                if new_k.startswith('stem.0.'):
-                    continue
-                backbone_sd[new_k] = v
+        for k, v in full_model.backbone.state_dict().items():
+            # 跳过分类头
+            if k.startswith('avgpool') or k.startswith('fc'):
+                continue
+            backbone_sd[k] = v
 
         missing, unexpected = self.backbone.load_state_dict(backbone_sd, strict=False)
-        loaded = len(backbone_sd)
+        print(f"[Backbone] Loaded {len(backbone_sd)} keys ✓")
         if missing:
-            print(f"[Backbone] Missing: {len(missing)} keys (expected: stem[0] + head)")
-            for k in missing[:5]:
-                print(f"  - {k}")
-        if unexpected:
-            print(f"[Backbone] Unexpected: {len(unexpected)} keys")
-        print(f"[Backbone] Loaded {loaded} keys from {checkpoint_path} ✓")
+            print(f"[Backbone] Missing: {len(missing)} keys")
+        del full_model, ckpt
+        torch.cuda.empty_cache()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 1. R(2+1)D backbone → intermediate features
