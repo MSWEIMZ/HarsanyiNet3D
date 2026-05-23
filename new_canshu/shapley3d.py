@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from model.HarsanyiNet3D import HarsanyiNet3D
+from model.HybridNet import HybridR2Plus1D
 # 复用原项目数据集（从 train.py 避免 argparse 冲突）
 sys.path.insert(0, os.path.dirname(__file__))
 from train import MitoDataset3D_HighRes
@@ -100,10 +101,11 @@ def get_args():
 # =============================================================================
 class HarsanyiNet3DAttribute:
     """
-    给定预训练 HarsanyiNet3D，计算输入变量（z0 的 K³ 个 voxels）的 Shapley 值。
+    给定预训练 HarsanyiNet3D 或 HybridR2Plus1D，
+    计算输入变量（z0 的 K³ 个 voxels）的 Shapley 值。
     """
 
-    def __init__(self, model: HarsanyiNet3D, device: str):
+    def __init__(self, model, device: str):
         self.device = device
         self.num_layers = model.num_layers
         self.K = model.conv_size  # cubic dim K
@@ -469,44 +471,87 @@ def get_rmse(shapley_a, shapley_b, n_players=None):
 # =============================================================================
 # 从 checkpoint 恢复模型
 # =============================================================================
+def infer_arch_from_sd(sd, prefix=''):
+    """从 state_dict 推測架构参数。"""
+    fc_keys = [k for k in sd if k.startswith(prefix + 'fc.') and k.endswith('.weight')]
+    num_layers = len(fc_keys)
+    fc_size = sd[fc_keys[0]].shape[0] if fc_keys else 32
+    fc_in = sd[fc_keys[0]].shape[1] if fc_keys else 65536
+    channels = 128
+    conv_size = 8
+    for k in sd:
+        if 'HarsanyiBlocks.0.v_weight' in k:
+            v_shape = sd[k].shape
+            conv_size = v_shape[0] // 3
+            break
+    for k in sd:
+        if 'fc.0.weight' in k:
+            channels = int(sd[k].shape[1] / (conv_size ** 3))
+            break
+    if 'fc_final.weight' in sd:
+        num_classes = sd['fc_final.weight'].shape[0]
+    else:
+        num_classes = sd.get(prefix + 'fc_final.weight', torch.zeros(16)).shape[0]
+    return {'num_layers': num_layers, 'channels': channels, 'conv_size': conv_size,
+            'fc_size': fc_size, 'num_classes': num_classes}
+
+
 def load_model_from_checkpoint(model_path, device):
     checkpoint = torch.load(model_path, map_location=device)
 
-    # 尝试从 checkpoint 获取架构参数
-    if 'args' in checkpoint:
-        args_dict = checkpoint['args']
-        if isinstance(args_dict, argparse.Namespace):
-            args_dict = vars(args_dict)
-        num_layers = args_dict.get('num_layers', 6)
-        channels = args_dict.get('channels', 128)
-        conv_size = args_dict.get('conv_size', 8)
-        fc_size = args_dict.get('fc_size', 32)
-        num_classes = args_dict.get('num_classes', 16)
-        beta = args_dict.get('beta', 1000)
-        gamma = args_dict.get('gamma', 1.0)
+    sd = checkpoint['model_state_dict']
+    is_hybrid = any(k.startswith('backbone.') for k in sd.keys())
+
+    if is_hybrid:
+        arch = infer_arch_from_sd(sd)
     else:
-        # 默认值
-        num_layers, channels, conv_size = 6, 128, 8
-        fc_size, num_classes = 32, 16
-        beta, gamma = 1000, 1.0
-        print("Warning: no args in checkpoint, using defaults")
+        arch = infer_arch_from_sd(sd)
 
-    model = HarsanyiNet3D(
-        num_classes=num_classes,
-        num_layers=num_layers,
-        channels=channels,
-        beta=beta,
-        gamma=gamma,
-        conv_size=conv_size,
-        fc_size=fc_size,
-        device=device,
-        in_channels=1,
-    ).to(device)
+    print(f"Inferred architecture: L={arch['num_layers']}, C={arch['channels']}, "
+          f"K={arch['conv_size']}, fc={arch['fc_size']}, classes={arch['num_classes']}")
 
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.double()
-    model.eval()
-    print(f"Model loaded: L={num_layers}, C={channels}, K={conv_size}")
+    num_layers = arch['num_layers']
+    channels = arch['channels']
+    conv_size = arch['conv_size']
+    fc_size = arch['fc_size']
+    num_classes = arch['num_classes']
+
+    if is_hybrid:
+        model = HybridR2Plus1D(
+            num_classes=num_classes,
+            num_layers=num_layers,
+            channels=channels,
+            beta=1000,
+            gamma=1.0,
+            conv_size=conv_size,
+            fc_size=fc_size,
+            device=device,
+            freeze_backbone=False,
+        ).to(device)
+        # 加载前先确保 backbone 未冻结（checkpoint 是全模型权重）
+        for p in model.backbone.parameters():
+            p.requires_grad = True
+        model.load_state_dict(sd)
+        for p in model.backbone.parameters():
+            p.requires_grad = False  # 推理时冻结
+        model_type = "HybridR2Plus1D"
+    else:
+        model = HarsanyiNet3D(
+            num_classes=num_classes,
+            num_layers=num_layers,
+            channels=channels,
+            beta=beta,
+            gamma=gamma,
+            conv_size=conv_size,
+            fc_size=fc_size,
+            device=device,
+            in_channels=1,
+        ).to(device)
+        model.load_state_dict(sd)
+        model_type = "HarsanyiNet3D"
+
+    model = model.double().eval()
+    print(f"Model loaded: {model_type} L={num_layers}, C={channels}, K={conv_size}")
     return model
 
 

@@ -161,8 +161,12 @@ class HybridR2Plus1D(nn.Module):
         return x
 
     def _get_value(self, x: torch.Tensor):
-        """Forward returning intermediate values for Shapley."""
-        z0 = self._get_z0(x)
+        """Forward returning intermediate values for Shapley.
+        如果输入已经是 z0（通道数等于 self.channels），跳过 backbone。"""
+        if x.shape[1] == self.channels:
+            z0 = x
+        else:
+            z0 = self._get_z0(x)
         hidden_y = None
         ys, zs, deltas = [], [], []
         out = z0
